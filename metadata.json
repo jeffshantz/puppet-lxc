@@ -1,0 +1,15 @@
+{
+  "name": "westerncs-lxc",
+  "version": "0.1.0",
+  "author": "Jeff Shantz <jeff@csd.uwo.ca>",
+  "summary": "Installs/configures LXC",
+  "license": "Apache 2.0",
+  "source": "",
+  "project_page": null,
+  "issues_url": null,
+  "dependencies": [
+    {"name":"puppetlabs-stdlib","version_requirement":">= 1.0.0"},
+    {"name":"herculesteam-augeasproviders_sysctl","version_requirement":">= 2.0.2"}
+  ]
+}
+

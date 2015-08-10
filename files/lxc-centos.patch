@@ -1,0 +1,206 @@
+--- lxc-centos	2014-12-07 13:23:40.000000000 -0500
++++ lxc-centos-new	2015-07-28 15:58:57.110168646 -0400
+@@ -29,7 +29,7 @@
+ #Configurations
+ default_path=/var/lib/lxc
+ 
+-# Some combinations of the tunning knobs below do not exactly make sense.
++# Some combinations of the tuning knobs below do not exactly make sense.
+ # but that's ok.
+ #
+ # If the "root_password" is non-blank, use it, else set a default.
+@@ -45,6 +45,8 @@
+ # If root_store_password = yes, store it in the configuration directory
+ # If root_prompt_password = yes, invoke "passwd" to force the user to change
+ # the root password after the container is created.
++# If root_expire_password = yes, you will be prompted to change the root
++# password at the first login.
+ #
+ # These are conditional assignments...  The can be overridden from the
+ # preexisting environment variables...
+@@ -61,6 +63,10 @@
+ # with users running under the API...  Don't default to "yes"
+ : ${root_prompt_password='no'}
+ 
++# Expire root password? Default to yes, but can be overridden from
++# the environment variable
++: ${root_expire_password='yes'}
++
+ # These are only going into comments in the resulting config...
+ lxc_network_type=veth
+ lxc_network_link=lxcbr0
+@@ -247,7 +253,7 @@
+ NM_CONTROLLED=no
+ TYPE=Ethernet
+ MTU=${MTU}
+-DHCP_HOSTNAME=$name
++DHCP_HOSTNAME=\`hostname\`
+ EOF
+ 
+     # set the hostname
+@@ -264,7 +270,6 @@
+     # set minimal fstab
+     cat <<EOF > $rootfs_path/etc/fstab
+ /dev/root               /                       rootfs   defaults        0 0
+-none                    /dev/shm                tmpfs    nosuid,nodev    0 0
+ EOF
+ 
+     # create lxc compatibility init script
+@@ -274,14 +279,19 @@
+ env container
+ 
+ pre-start script
+-        if [ "x$container" != "xlxc" -a "x$container" != "xlibvirt" ]; then
++        if [ "x\$container" != "xlxc" -a "x\$container" != "xlibvirt" ]; then
+                 stop;
+         fi
+-        initctl start tty TTY=console
++
+         rm -f /var/lock/subsys/*
+         rm -f /var/run/*.pid
++        [ -e /etc/mtab ] || ln -s /proc/mounts /etc/mtab
++        mkdir -p /dev/shm
++        mount -t tmpfs -o nosuid,nodev tmpfs /dev/shm
++
++        initctl start tty TTY=console
+         telinit 3
+-        exit 0;
++        exit 0
+ end script
+ EOF
+     elif [ "$release" = "5" ]; then
+@@ -340,7 +350,7 @@
+     # prevent mingetty from calling vhangup(2) since it fails with userns.
+     # Same issue as oracle template: prevent mingetty from calling vhangup(2)
+     # commit 2e83f7201c5d402478b9849f0a85c62d5b9f1589.
+-    sed -i 's|mingetty|mingetty --nohangup|' $container_rootfs/etc/init/tty.conf
++    sed -i 's|mingetty|mingetty --nohangup|' $rootfs_path/etc/init/tty.conf
+ 
+     if [ ${root_display_password} = "yes" ]
+     then
+@@ -355,8 +365,12 @@
+     fi
+ 
+     echo "root:$root_password" | chroot $rootfs_path chpasswd
+-    # Also set this password as expired to force the user to change it!
+-    chroot $rootfs_path passwd -e root
++
++    if [ ${root_expire_password} = "yes" ]
++    then
++        # Also set this password as expired to force the user to change it!
++        chroot $rootfs_path passwd -e root
++    fi
+ 
+     # This will need to be enhanced for CentOS 7 when systemd
+     # comes into play...   /\/\|=mhw=|\/\/
+@@ -399,7 +413,13 @@
+ 
+     # download a mini centos into a cache
+     echo "Downloading centos minimal ..."
+-    YUM="yum --installroot $INSTALL_ROOT -y --nogpgcheck"
++    YUM0="yum --installroot $INSTALL_ROOT -y --nogpgcheck"
++
++    if yum -h | grep -q 'releasever=RELEASEVER'; then
++       YUM="$YUM0 --releasever=$release"
++    else
++       YUM="$YUM0"
++    fi
+     PKG_LIST="yum initscripts passwd rsyslog vim-minimal openssh-server openssh-clients dhclient chkconfig rootfiles policycoreutils"
+ 
+     # use temporary repository definition
+@@ -465,7 +485,7 @@
+         mknod -m 666 $INSTALL_ROOT/$INSTALL_ROOT/dev/urandom c 1 9
+         mkdir -p $INSTALL_ROOT/$INSTALL_ROOT/var/cache/yum
+         cp -al $INSTALL_ROOT/var/cache/yum/* $INSTALL_ROOT/$INSTALL_ROOT/var/cache/yum/
+-        chroot $INSTALL_ROOT $YUM install $PKG_LIST
++        chroot $INSTALL_ROOT $YUM0 install $PKG_LIST
+         if [ $? -ne 0 ]; then
+             echo "Failed to download the rootfs, aborting."
+             return 1
+@@ -602,8 +622,6 @@
+ lxc.arch = $arch
+ lxc.utsname = $utsname
+ 
+-lxc.autodev = $auto_dev
+-
+ # When using LXC with apparmor, uncomment the next line to run unconfined:
+ #lxc.aa_profile = unconfined
+ 
+@@ -685,11 +703,11 @@
+     case "$1" in
+         -h|--help)      usage $0 && exit 0;;
+         -p|--path)      path=$2; shift 2;;
+-        --rootfs)       rootfs=$2; shift 2;;
++        --rootfs)       rootfs_path=$2; shift 2;;
+         -n|--name)      name=$2; shift 2;;
+-        -c|--clean)     clean=$2; shift 2;;
++        -c|--clean)     clean=1; shift 1;;
+         -R|--release)   release=$2; shift 2;;
+-	--repo)		repo="$2"; shift 2;;
++        --repo)         repo="$2"; shift 2;;
+         -a|--arch)      newarch=$2; shift 2;;
+         --fqdn)         utsname=$2; shift 2;;
+         --)             shift 1; break ;;
+@@ -745,7 +763,8 @@
+     fi
+ fi
+ 
+-cache_base=/var/cache/lxc/centos/$basearch
++# Allow the cache base to be set by environment variable
++cache_base=${LXC_CACHE_PATH:-"/var/cache/lxc"}/centos/$basearch
+ 
+ # Let's do something better for the initial root password.
+ # It's not perfect but it will defeat common scanning brute force
+@@ -814,26 +833,11 @@
+     fi
+ fi
+ 
+-# CentOS 7 and above should run systemd.  We need autodev enabled to keep
+-# systemd from causing problems.
+-#
+-# There is some ambiguity here due to the differnce between versioning
+-# of point specific releases such as 6.5 and the rolling release 6.  We
+-# only want the major number here if it's a point release...
+-
+-mrelease=$(expr $release : '\([0-9]*\)')
+-if [ $mrelease -gt 6 ]; then
+-    auto_dev="1"
+-else
+-    auto_dev="0"
+-fi
+-
+ if [ "$(id -u)" != "0" ]; then
+     echo "This script should be run as 'root'"
+     exit 1
+ fi
+ 
+-
+ if [ -z "$rootfs_path" ]; then
+     rootfs_path=$path/rootfs
+     # check for 'lxc.rootfs' passed in through default config by lxc-create
+@@ -877,7 +881,7 @@
+ 
+ configure_centos_init
+ 
+-if [ ! -z $clean ]; then
++if [ ! -z "$clean" ]; then
+     clean || exit 1
+     exit 0
+ fi
+@@ -910,7 +914,9 @@
+ "
+     chroot ${rootfs_path} passwd
+ else
+-    echo "
++    if [ ${root_expire_password} = "yes" ]
++    then
++        echo "
+ The root password is set up as "expired" and will require it to be changed
+ at first login, which you should do as soon as possible.  If you lose the
+ root password or wish to change it without starting the container, you
+@@ -919,4 +925,5 @@
+ 
+         chroot ${rootfs_path} passwd
+ "
++    fi
+ fi
