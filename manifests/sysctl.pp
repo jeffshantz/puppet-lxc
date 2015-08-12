@@ -1,4 +1,4 @@
-class lxc {
+class lxc::sysctl {
 
   sysctl { "net.ipv4.ip_forward":
     ensure  => "present",

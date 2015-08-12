@@ -4,13 +4,13 @@
 #
 class lxc::install inherits lxc {
 
-  package { "epel-release":
-    ensure => "present",
-    before => Package[$lxc::packages],
+  if ($::osfamily == "RedHat") and ($::operatingsystem != "Amazon") and ($::operatingsystem != "Fedora") {
+    include epel
+    Class["epel"] -> Package[$lxc::packages]
   }
 
   package { $lxc::packages:
-    ensure => "present",
+    ensure  => "present",
   }
 
 }
