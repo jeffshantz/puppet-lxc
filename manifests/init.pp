@@ -28,11 +28,13 @@ inherits lxc::params {
   contain lxc::install
   contain lxc::patch
   contain lxc::service
-  contain lxc::sysctl 
+  contain lxc::sysctl
+  contain lxc::functions
 
   Class["lxc::install"] ->
   Class["lxc::patch"] ->
   Class["lxc::service"] ->
-  Class["lxc::sysctl"]
+  Class["lxc::sysctl"] ->
+  Class["lxc::functions"]
 
 }
